@@ -54,7 +54,7 @@ useEffect(() => {
       
       // Fetch goals using the same endpoint as before (getAllGoals)
       console.log(token)
-      const goalsResponse = await fetch('https://fireflow-m0z1.onrender.com/api/goals', {
+      const goalsResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/goals`, {
         credentials: 'include',
         headers: {
           Authorization: `Bearer ${token}`
@@ -66,7 +66,7 @@ useEffect(() => {
       // Fetch savings data
       let savingsData = null
       try {
-        const savingsResponse = await fetch('https://fireflow-m0z1.onrender.com/api/users/savings', {
+        const savingsResponse = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/users/savings`, {
           credentials: 'include',
           headers: {
             Authorization: `Bearer ${token}`
@@ -148,7 +148,7 @@ useEffect(() => {
       }
       
       const token = localStorage.getItem("authToken");
-      const response = await fetch('https://fireflow-m0z1.onrender.com/api/goals/allocate', {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/goals/allocate`, {
         method: 'POST',
         credentials: 'include',
         headers: {
