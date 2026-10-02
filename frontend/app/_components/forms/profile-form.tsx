@@ -64,7 +64,7 @@ export function ProfilePage() {
       setLoading(true);
       const token = localStorage.getItem("authToken");
       try {
-        const response = await fetch("https://fireflow-m0z1.onrender.com/api/users", {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/users`, {
           method: "GET",
           credentials: "include",
           headers: {
@@ -95,7 +95,7 @@ export function ProfilePage() {
     const token = localStorage.getItem("authToken");
     try {
       // Send as numbers
-      const response = await fetch("https://fireflow-m0z1.onrender.com/api/users/update", {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/users/update`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -133,7 +133,7 @@ export function ProfilePage() {
     setIsDeleting(true);
     const token = localStorage.getItem("authToken");
     try {
-      const response = await fetch("https://fireflow-m0z1.onrender.com/api/users/delete", {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/users/delete`, {
         method: "DELETE",
         credentials: "include",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },

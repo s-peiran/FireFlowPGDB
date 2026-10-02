@@ -115,7 +115,7 @@ export function AddRecurringForm({
       const token = localStorage.getItem("authToken");
 
       const response = await fetch(
-        "https://fireflow-m0z1.onrender.com/api/recurring-transactions/create",
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/recurring-transactions/create`,
         {
           method: "POST",
           credentials: "include",

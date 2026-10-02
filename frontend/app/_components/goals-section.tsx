@@ -42,7 +42,7 @@ export function GoalsSection() {
       setLoading(true)
       const token = localStorage.getItem("authToken");
 
-      const response = await fetch("https://fireflow-m0z1.onrender.com/api/goals/with-participants", {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/goals/with-participants`, {
         method: "GET",
         credentials: "include",
         headers: {
@@ -58,7 +58,7 @@ export function GoalsSection() {
       const rawUserGoals: GoalWithParticipant[] = await response.json()
       const userGoals = rawUserGoals.filter((g) => g.goal.status !== "completed")
 
-      const response2 = await fetch("https://fireflow-m0z1.onrender.com/api/goal-participants", {
+      const response2 = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/goal-participants`, {
         method: "GET",
         credentials: "include",
         headers: {

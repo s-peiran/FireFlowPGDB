@@ -112,7 +112,7 @@ export default function GoalsPage() {
         try {
           console.log(`Fetching participants for goal ${goalId}...`);
           const response = await fetch(
-            `https://fireflow-m0z1.onrender.com/api/goals/${goalId}/participants`,
+            `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/goals/${goalId}/participants`,
             {
               method: "GET",
               credentials: "include",
@@ -150,11 +150,11 @@ export default function GoalsPage() {
       setLoading(true);
       console.log(
         "Attempting to fetch from:",
-        "https://fireflow-m0z1.onrender.com/api/goals/with-participants"
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/goals/with-participants`
       ); // Debug log
 
       const response = await fetch(
-        "https://fireflow-m0z1.onrender.com/api/goals/with-participants",
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/goals/with-participants`,
         {
           method: "GET",
           credentials: "include",
@@ -185,7 +185,7 @@ export default function GoalsPage() {
     const token = localStorage.getItem("authToken");
     try {
       const savingsResponse = await fetch(
-        "https://fireflow-m0z1.onrender.com/api/users/savings",
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/users/savings`,
         {
           credentials: "include",
           headers: {

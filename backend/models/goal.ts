@@ -1,7 +1,7 @@
 
 
 export interface Goal {
-    goal_id: number; // Supabase generates this UUID
+    goal_id: number; // PostgreSQL auto-incrementing ID
     title: string;
     category: string;
     description?: string;

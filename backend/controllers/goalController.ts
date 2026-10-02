@@ -1,381 +1,266 @@
 import { Request, Response } from 'express';
-import { supabase } from "../db/supabaseClient";
+import pool from '../db/pool';
 import { Goal } from '../models/goal'; 
 import jwt from 'jsonwebtoken';
 
 export const getAllGoals = async (req: Request, res: Response) => {
-  const user_id = (req.user as jwt.JwtPayload).sub;
+  const user_id = (req.user as jwt.JwtPayload).sub as string;
 
   try {
-    // Get goals where user is owner
-    const { data: ownedGoals, error: ownedError } = await supabase
-      .from('goal')
-      .select('*')
-      .eq('user_id', user_id)
-      .order('target_date', {ascending: true });
-      
-    if (ownedError) {
-      console.error("Error fetching owned goals:", ownedError);
-      throw ownedError;
-    }
+    const { rows: ownedGoals } = await pool.query(
+      'SELECT * FROM goal WHERE user_id = $1 ORDER BY target_date ASC',
+      [user_id]
+    );
 
-    // Get goals where user is a participant (including pending)
-    const { data: participantGoals, error: participantError } = await supabase
-      .from('goal_participants')
-      .select(`
-        role,
-        goal:goal_id (
-          goal_id,
-          title,
-          category,
-          description,
-          status,
-          amount,
-          target_date,
-          user_id
-        )
-      `)
-      .eq('user_id', user_id);
+    const { rows: participantGoals } = await pool.query(`
+      SELECT gp.role, g.* 
+      FROM goal_participant gp
+      JOIN goal g ON gp.goal_id = g.goal_id
+      WHERE gp.user_id = $1
+    `, [user_id]);
 
-    if (participantError) {
-      console.error("Error fetching participant goals:", participantError);
-      throw participantError;
-    }
-
-    // Combine owned goals and participant goals
-    const allGoals = [...(ownedGoals || [])];
+    const allGoals: any[] = [...(ownedGoals || [])];
     
-    // Add participant goals (flatten the structure)
     participantGoals?.forEach(participant => {
-      if (participant.goal) {
-        const goalWithRole = {
-          ...participant.goal,
-          userRole: participant.role
-        };
-        allGoals.push(goalWithRole);
-      }
+      const { role, ...goalData } = participant;
+      allGoals.push({
+        ...goalData,
+        userRole: role
+      });
     });
 
-    // Remove duplicates (in case user is both owner and participant)
     const uniqueGoals = allGoals.filter((goal, index, self) => 
       index === self.findIndex(g => g.goal_id === goal.goal_id)
     );
 
-    console.log("Combined goals result:");
-    console.log("- Owned goals:", ownedGoals?.length || 0);
-    console.log("- Participant goals:", participantGoals?.length || 0);
-    console.log("- Unique goals:", uniqueGoals.length);
-
-    // Get participant counts for each goal (including pending)
     const goalIds = uniqueGoals.map(goal => goal.goal_id);
-    const { data: participantCounts, error: participantCountError } = await supabase
-      .from('goal_participants')
-      .select('goal_id')
-      .in('goal_id', goalIds);
-
-    if (participantCountError) {
-      console.error("Error fetching participant counts:", participantCountError);
+    
+    if (goalIds.length === 0) {
+      res.status(200).json([]);
+      return;
     }
 
-    // Count participants per goal (including pending)
+    const { rows: participantCounts } = await pool.query(
+      'SELECT goal_id FROM goal_participant WHERE goal_id = ANY($1::int[])',
+      [goalIds]
+    );
+
     const participantCountMap: { [key: number]: number } = {};
     participantCounts?.forEach(participant => {
       participantCountMap[participant.goal_id] = (participantCountMap[participant.goal_id] || 0) + 1;
     });
 
-    // Get current amounts for each goal
-    const { data: allocations, error: allocationError } = await supabase
-      .from('goal_participants')
-      .select('goal_id, allocated_amount')
-      .in('goal_id', goalIds);
+    const { rows: allocations } = await pool.query(
+      'SELECT goal_id, allocated_amount FROM goal_participant WHERE goal_id = ANY($1::int[])',
+      [goalIds]
+    );
 
-    if (allocationError) {
-      console.error("Error fetching allocations:", allocationError);
-    }
-
-    console.log("Raw allocation data:", allocations);
-
-    // Calculate current amounts per goal
     const currentAmountMap: { [key: number]: number } = {};
     allocations?.forEach(allocation => {
       const goalId = allocation.goal_id;
       const amount = allocation.allocated_amount || 0;
-      currentAmountMap[goalId] = (currentAmountMap[goalId] || 0) + amount;
+      currentAmountMap[goalId] = (currentAmountMap[goalId] || 0) + Number(amount);
     });
 
-    // Merge the data
     const goalsWithExtendedInfo = uniqueGoals.map(goal => ({
       ...goal,
       current_amount: currentAmountMap[goal.goal_id] || 0,
       participantCount: participantCountMap[goal.goal_id] || 1,
-      userRole: goal.userRole || 'owner' // Default to owner if not set
+      userRole: goal.userRole || 'owner'
     }));
 
     res.status(200).json(goalsWithExtendedInfo);
-  
+    return;
   } catch (error) {
     console.error("Failed to fetch goals:", error);
     res.status(500).json({ error: "Failed to fetch goals" });
+    return;
   }
 };
 
-// Add this function to your existing goalController.ts
-
 export const getCurrentAmounts = async (req: Request, res: Response) => {
-  const user_id = (req.user as jwt.JwtPayload).sub;
-  console.log("=== GET CURRENT AMOUNTS DEBUG ===");
-  console.log("User ID from JWT:", user_id);
+  const user_id = (req.user as jwt.JwtPayload).sub as string;
 
   try {
-    // Get all goals where user is the owner
-    const { data: ownedGoals, error: ownedError } = await supabase
-      .from('goal')
-      .select('goal_id')
-      .eq('user_id', user_id);
-
-    if (ownedError) {
-      console.error("Error fetching owned goals:", ownedError);
-      throw ownedError;
-    }
+    const { rows: ownedGoals } = await pool.query(
+      'SELECT goal_id FROM goal WHERE user_id = $1',
+      [user_id]
+    );
 
     if (!ownedGoals || ownedGoals.length === 0) {
-      console.log("No owned goals found");
       res.status(200).json({});
       return;
     }
 
     const goalIds = ownedGoals.map(goal => goal.goal_id);
-    console.log("Found goal IDs:", goalIds);
 
-    // Get total allocated amounts for each goal by summing all participants' contributions
-    const { data: participants, error: participantsError } = await supabase
-      .from('goal_participants')
-      .select('goal_id, allocated_amount')
-      .in('goal_id', goalIds);
+    const { rows: participants } = await pool.query(
+      'SELECT goal_id, allocated_amount FROM goal_participant WHERE goal_id = ANY($1::int[])',
+      [goalIds]
+    );
 
-    if (participantsError) {
-      console.error("Error fetching participants:", participantsError);
-      throw participantsError;
-    }
-
-    console.log("Participants data:", participants);
-
-    // Calculate total allocated amount per goal
     const currentAmounts: { [key: string]: number } = {};
-    
-    // Initialize all goals with 0
     goalIds.forEach(goalId => {
       currentAmounts[goalId] = 0;
     });
 
-    // Sum up allocated amounts from all participants for each goal
     participants?.forEach(participant => {
       const goalId = participant.goal_id;
-      currentAmounts[goalId] = (currentAmounts[goalId] || 0) + (participant.allocated_amount || 0);
+      currentAmounts[goalId] = (currentAmounts[goalId] || 0) + Number(participant.allocated_amount || 0);
     });
 
-    console.log("Current amounts calculated:", currentAmounts);
     res.status(200).json(currentAmounts);
-
+    return;
   } catch (error) {
     console.error("Error fetching current amounts:", error);
     res.status(500).json({ error: "Failed to fetch current amounts" });
+    return;
   }
 };
 
- 
-// Controller to create a new goal
 export const createGoal = async (req: Request, res: Response) => {
-  console.log("Received request body:", req.body);
-  const user_id = (req.user as jwt.JwtPayload).sub;
-  
-  // Extract selectedFriends before adding to goal data
+  const user_id = (req.user as jwt.JwtPayload).sub as string;
   const { selectedFriends = [], ...goalData } = req.body;
   goalData.user_id = user_id;
 
   try {
-    // Create the goal first (without selectedFriends)
-    const { data: createdGoal, error: goalError } = await supabase
-      .from('goal')
-      .insert(goalData)
-      .select()
-      .single();
+    const { rows } = await pool.query(
+      'INSERT INTO goal (title, category, description, status, amount, target_date, user_id) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [goalData.title, goalData.category, goalData.description, goalData.status, goalData.amount, new Date(goalData.target_date), user_id]
+    );
+    const createdGoal = rows[0];
 
-    if (goalError) {
-      throw goalError;
-    }
+    await pool.query(
+      'INSERT INTO goal_participant (goal_id, user_id, role, allocated_amount) VALUES ($1, $2, $3, $4)',
+      [createdGoal.goal_id, user_id, 'owner', 0]
+    );
 
-    // Create goal participant entry for the owner
-    const ownerParticipant = {
-      goal_id: createdGoal.goal_id,
-      user_id: user_id,
-      role: 'owner',
-      allocated_amount: 0
-    };
-
-    const { error: ownerError } = await supabase
-      .from('goal_participants')
-      .insert(ownerParticipant);
-
-    if (ownerError) {
-      // Rollback: delete the goal if owner participant creation fails
-      await supabase.from('goal').delete().eq('goal_id', createdGoal.goal_id);
-      throw ownerError;
-    }
-
-    // If there are selected friends, send them invitations
     if (selectedFriends.length > 0) {
-      const invitationParticipants = selectedFriends.map((friendId: string) => ({
-        goal_id: createdGoal.goal_id,
-        user_id: friendId,
-        role: 'pending', // Start as pending invitation
-        allocated_amount: 0
-      }));
-
-      const { error: invitationsError } = await supabase
-        .from('goal_participants')
-        .insert(invitationParticipants);
-
-      if (invitationsError) {
-        console.error("Failed to send invitations:", invitationsError);
-        // Don't rollback the goal, just log the error
-        // The owner can manually send invitations later
+      for (const friendId of selectedFriends) {
+        await pool.query(
+          'INSERT INTO goal_participant (goal_id, user_id, role, allocated_amount) VALUES ($1, $2, $3, $4)',
+          [createdGoal.goal_id, friendId, 'pending', 0]
+        );
       }
     }
 
     res.status(201).json({ 
       message: "Goal created successfully", 
       data: createdGoal,
-      participants: selectedFriends.length + 1 // owner + collaborators
+      participants: selectedFriends.length + 1
     });
+    return;
   } catch (error: any) {
-    console.error("Supabase insert error:", error);
+    console.error("PG insert error:", error);
     res.status(500).json({ error: 'Failed to create goal' });
+    return;
   }
 };
 
-  export const updateGoal = async (req: Request, res: Response) => {
-    try {
-      const {goal_id, ...updateFields} = req.body;
-      const { data, error } = await supabase.from('goal').update(updateFields).eq('goal_id', goal_id).select('*');
-      if (error) {
-        throw error;
-      } else if (data.length === 0) {
-        res.status(404).json({ error: 'goal not found' });
-      }
-      return; 
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to update goal' });
+export const updateGoal = async (req: Request, res: Response) => {
+  try {
+    const { goal_id, ...updateFields } = req.body;
+    
+    if (updateFields.target_date) {
+      updateFields.target_date = new Date(updateFields.target_date);
     }
-  };
-
-  // Controller to delete a goal by ID for the authenticated user
-  export const deleteGoal = async (req: Request, res: Response) => {
-
-    try {
-      const { goal_id } = req.body;
-      console.log("Recieve goal_id:", goal_id);
-      const {data, error} = await supabase.from('goal').delete().eq('goal_id', goal_id).select('*');
-      if (error) {
-          throw error;
-      }
-      else if(data.length == 0){
-        res.status(404).json({ error: 'Transaction not found' });
-      }
-    } catch (error: any) {
-      res.status(500).json({ error: 'Failed to delete goal'});
+    
+    const updates = [];
+    const values = [];
+    let i = 1;
+    for (const [key, value] of Object.entries(updateFields)) {
+      updates.push(`${key} = $${i}`);
+      values.push(value);
+      i++;
     }
-  };
+    values.push(parseInt(goal_id));
 
-  // Controller to get all goals with participant information
+    const { rows } = await pool.query(
+      `UPDATE goal SET ${updates.join(', ')} WHERE goal_id = $${i} RETURNING *`,
+      values
+    );
+    
+    res.status(200).json(rows[0]);
+    return;
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update goal' });
+    return;
+  }
+};
+
+export const deleteGoal = async (req: Request, res: Response) => {
+  try {
+    const { goal_id } = req.body;
+    await pool.query('DELETE FROM goal WHERE goal_id = $1', [parseInt(goal_id)]);
+    res.status(200).json({ message: "Goal deleted successfully" });
+    return;
+  } catch (error: any) {
+    res.status(500).json({ error: 'Failed to delete goal' });
+    return;
+  }
+};
+
 export const getGoalsWithParticipants = async (req: Request, res: Response) => {
-  const user_id = (req.user as jwt.JwtPayload).sub;
-  console.log("=== GET GOALS WITH PARTICIPANTS DEBUG ===");
-  console.log("User ID from JWT:", user_id);
+  const user_id = (req.user as jwt.JwtPayload).sub as string;
   
   try {
-    // Get goals where user is either owner or participant (including pending)
-    // console.log("Querying goal_participants table...");
-    const { data, error } = await supabase
-      .from('goal_participants')
-      .select(`
-        goal_id,
-        role,
-        allocated_amount,
-        goal:goal_id (
-          goal_id,
-          title,
-          category,
-          description,
-          status,
-          amount,
-          target_date,
-          user_id
-        )
-      `)
-      .eq('user_id', user_id)
-      .order('goal(target_date)', { ascending: true });
-      
-    // console.log("Goal participants query result:");
-    // console.log("- Data:", JSON.stringify(data, null, 2));
-    // console.log("- Error:", error);
-    // console.log("- Data length:", data?.length || 0);
-      
-    if (error) {
-      console.error("Supabase error details:", JSON.stringify(error, null, 2));
-      throw error;
-    }
+    const { rows: dataRaw } = await pool.query(`
+      SELECT gp.goal_id, gp.user_id, gp.role, gp.allocated_amount, 
+             g.title as g_title, g.category as g_category, g.description as g_description,
+             g.status as g_status, g.amount as g_amount, g.target_date as g_target_date, g.user_id as g_user_id
+      FROM goal_participant gp
+      JOIN goal g ON gp.goal_id = g.goal_id
+      WHERE gp.user_id = $1
+      ORDER BY g.target_date ASC
+    `, [user_id]);
 
-    // Get participant counts for each goal
-    const goalIds = data?.map(item => item.goal_id) || [];
-    // console.log("Goal IDs found:", goalIds);
-    
-    if (goalIds.length === 0) {
-      console.log("No goal participants found - returning empty array");
+    const data = dataRaw.map(row => ({
+      goal_id: row.goal_id,
+      user_id: row.user_id,
+      role: row.role,
+      allocated_amount: row.allocated_amount,
+      goal: {
+        goal_id: row.goal_id,
+        title: row.g_title,
+        category: row.g_category,
+        description: row.g_description,
+        status: row.g_status,
+        amount: row.g_amount,
+        target_date: row.g_target_date,
+        user_id: row.g_user_id
+      }
+    }));
+      
+    if (!data || data.length === 0) {
       res.status(200).json([]);
       return;
     }
 
-    const { data: participantCounts, error: countError } = await supabase
-      .from('goal_participants')
-      .select('goal_id, user_id, role')
-      .in('goal_id', goalIds);
-      // Include all participants (owner + collaborator + pending)
+    const goalIds = data.map(item => item.goal_id);
+    
+    const { rows: participantCounts } = await pool.query(
+      'SELECT goal_id, user_id, role FROM goal_participant WHERE goal_id = ANY($1::int[])',
+      [goalIds]
+    );
 
-    if (countError) {
-      console.error("Participant count error:", countError);
-      throw countError;
-    }
-
-    // console.log("Participant counts:", participantCounts);
-
-    // Group participant counts by goal_id
-    const participantCountMap = participantCounts?.reduce((acc, participant) => {
+    const participantCountMap = participantCounts.reduce((acc, participant) => {
       acc[participant.goal_id] = (acc[participant.goal_id] || 0) + 1;
       return acc;
-    }, {} as Record<number, number>) || {};
+    }, {} as Record<number, number>);
 
-    // Get total allocated amounts for each goal
-    const allGoalIds = data?.map(item => item.goal_id) || [];
-    const { data: allAllocations, error: allocationError } = await supabase
-      .from('goal_participants')
-      .select('goal_id, allocated_amount')
-      .in('goal_id', allGoalIds);
+    const { rows: allAllocations } = await pool.query(
+      'SELECT goal_id, allocated_amount FROM goal_participant WHERE goal_id = ANY($1::int[])',
+      [goalIds]
+    );
 
-    if (allocationError) {
-      console.error("Error fetching all allocations:", allocationError);
-    }
-
-    // Calculate current amounts per goal
     const currentAmountMap: { [key: number]: number } = {};
-    allAllocations?.forEach(allocation => {
+    allAllocations.forEach(allocation => {
       const goalId = allocation.goal_id;
       const amount = allocation.allocated_amount || 0;
-      currentAmountMap[goalId] = (currentAmountMap[goalId] || 0) + amount;
+      currentAmountMap[goalId] = (currentAmountMap[goalId] || 0) + Number(amount);
     });
 
-    // Enhance the data with participant counts and current amounts
-    const enhancedData = data?.map(item => ({
+    const enhancedData = data.map(item => ({
       ...item,
       goal: {
         ...item.goal,
@@ -384,89 +269,60 @@ export const getGoalsWithParticipants = async (req: Request, res: Response) => {
       }
     }));
 
-    // console.log("Final enhanced data:", JSON.stringify(enhancedData, null, 2));
     res.status(200).json(enhancedData);
+    return;
   } catch (error) {
     console.error("Error fetching goals with participants:", error);
     res.status(500).json({ error: "Failed to fetch goals" });
+    return;
   }
 };
 
-// Controller to get detailed participant information for collaborative goals
 export const getGoalParticipants = async (req: Request, res: Response) => {
   const { goalId } = req.params;
-  const user_id = (req.user as jwt.JwtPayload).sub;
+  const user_id = (req.user as jwt.JwtPayload).sub as string;
   
   try {
-    // Get participants for this goal - convert goalId to number
-    const { data, error } = await supabase
-      .from('goal_participants')
-      .select('goal_id, user_id, role, allocated_amount')
-      .eq('goal_id', parseInt(goalId));
-
-    if (error) {
-      console.error("Error fetching goal participants:", error);
-      throw error;
-    }
+    const { rows: data } = await pool.query(`
+      SELECT gp.goal_id, gp.user_id, gp.role, gp.allocated_amount, u.name as user_name
+      FROM goal_participant gp
+      LEFT JOIN "user" u ON gp.user_id = u.user_id
+      WHERE gp.goal_id = $1
+    `, [parseInt(goalId)]);
 
     if (!data || data.length === 0) {
       res.status(200).json([]);
       return;
     }
 
-    // Check if the requesting user is a participant
     const userParticipant = data.find(participant => participant.user_id === user_id);
     if (!userParticipant) {
       res.status(403).json({ error: "Access denied to this goal" });
       return;
     }
 
-    // Show all participants with their actual roles (owner, collaborator, pending)
-    let filteredData = data;
-
-    // Get user details for all participants (use filtered data)
-    const userIds = filteredData.map(p => p.user_id);
-    const { data: users, error: usersError } = await supabase
-      .from('user')
-      .select('user_id, name')
-      .in('user_id', userIds);
-
-    if (usersError) {
-      console.error("Error fetching user details:", usersError);
-      throw usersError;
-    }
-
-    // Combine participant and user data (use filtered data)
-    const enrichedParticipants = filteredData.map(participant => {
-      const user = users?.find(u => u.user_id === participant.user_id);
-      return {
-        goal_id: participant.goal_id,
-        user_id: participant.user_id,
-        role: participant.role,
-        allocated_amount: participant.allocated_amount,
-        user: user || { name: 'Unknown User' }
-      };
-    });
+    const enrichedParticipants = data.map(participant => ({
+      goal_id: participant.goal_id,
+      user_id: participant.user_id,
+      role: participant.role,
+      allocated_amount: participant.allocated_amount,
+      user: { name: participant.user_name || 'Unknown User' }
+    }));
 
     res.status(200).json(enrichedParticipants);
+    return;
   } catch (error) {
     console.error("Error fetching goal participants:", error);
     res.status(500).json({ error: "Failed to fetch goal participants" });
+    return;
   }
 };
 
-// Add this function to handle new allocations
-
 export const allocateToGoals = async (req: Request, res: Response) => {
-  const user_id = (req.user as jwt.JwtPayload).sub;
-  const { allocations } = req.body; // { goalId: amount, goalId2: amount2, ... }
-
-  // console.log("=== ALLOCATE TO GOALS DEBUG ===");
-  // console.log("User ID:", user_id);
-  // console.log("Allocations:", allocations);
+  const user_id = (req.user as jwt.JwtPayload).sub as string;
+  const { allocations } = req.body; 
 
   try {
-    // Validate input
     if (!allocations || typeof allocations !== 'object') {
       res.status(400).json({ error: "Invalid allocations data" });
       return;
@@ -481,194 +337,98 @@ export const allocateToGoals = async (req: Request, res: Response) => {
 
     const completedGoals: number[] = [];
 
-    // Process each allocation
     for (const [goalId, amount] of allocationEntries) {
-      console.log(`\n=== PROCESSING ALLOCATION ===`);
-      console.log(`Goal ID: ${goalId}, Amount: ${amount}, User: ${user_id}`);
-      
-      // Check if user is already a participant in this goal
-      const { data: existingParticipant, error: checkError } = await supabase
-        .from('goal_participants')
-        .select('*')
-        .eq('goal_id', parseInt(goalId))
-        .eq('user_id', user_id)
-        .single();
-
-      if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = no rows found
-        console.error(`Error checking participant for goal ${goalId}:`, checkError);
-        throw checkError;
-      }
-
-      console.log(`Existing participant found:`, existingParticipant ? 'Yes' : 'No');
+      const { rows: existingRows } = await pool.query(
+        'SELECT allocated_amount FROM goal_participant WHERE goal_id = $1 AND user_id = $2',
+        [parseInt(goalId), user_id]
+      );
+      const existingParticipant = existingRows[0];
 
       if (existingParticipant) {
-        // Update existing participant's allocated amount
         const oldAmount = existingParticipant.allocated_amount || 0;
-        const newAmount = oldAmount + Number(amount);
+        const newAmount = Number(oldAmount) + Number(amount);
         
-        // console.log(`Updating existing participant for goal ${goalId}:`);
-        // console.log(`  - Old amount: ${oldAmount}`);
-        // console.log(`  - Additional amount: ${amount}`);
-        // console.log(`  - New total amount: ${newAmount}`);
-        
-        const { error: updateError } = await supabase
-          .from('goal_participants')
-          .update({ allocated_amount: newAmount })
-          .eq('goal_id', parseInt(goalId))
-          .eq('user_id', user_id);
-
-        if (updateError) {
-          console.error(`Error updating allocation for goal ${goalId}:`, updateError);
-          throw updateError;
-        }
-
-        console.log(`✅ Successfully updated allocation for goal ${goalId}: ${oldAmount} -> ${newAmount}`);
+        await pool.query(
+          'UPDATE goal_participant SET allocated_amount = $1 WHERE goal_id = $2 AND user_id = $3',
+          [newAmount, parseInt(goalId), user_id]
+        );
       } else {
-        // Create new participant entry (set role to 'collaborator' if it's not the owner)
-        const { data: goalData, error: goalError } = await supabase
-          .from('goal')
-          .select('user_id')
-          .eq('goal_id', parseInt(goalId))
-          .single();
+        const { rows: goalRows } = await pool.query(
+          'SELECT user_id FROM goal WHERE goal_id = $1',
+          [parseInt(goalId)]
+        );
+        const goalData = goalRows[0];
 
-        if (goalError) {
-          console.error(`Error fetching goal data for goal ${goalId}:`, goalError);
-          throw goalError;
+        if (!goalData) {
+          throw new Error("Goal not found");
         }
 
         const role = goalData.user_id === user_id ? 'owner' : 'collaborator';
 
-        // console.log(`Creating new participant for goal ${goalId}:`);
-        // console.log(`  - User ID: ${user_id}`);
-        // console.log(`  - Role: ${role}`);
-        // console.log(`  - Amount: ${amount}`);
-
-        const { error: insertError } = await supabase
-          .from('goal_participants')
-          .insert({
-            goal_id: parseInt(goalId),
-            user_id: user_id,
-            role: role,
-            allocated_amount: Number(amount)
-          });
-
-        if (insertError) {
-          console.error(`Error creating participant for goal ${goalId}:`, insertError);
-          throw insertError;
-        }
-
-        console.log(`✅ Successfully created new participant for goal ${goalId} with amount ${amount} and role ${role}`);
+        await pool.query(
+          'INSERT INTO goal_participant (goal_id, user_id, role, allocated_amount) VALUES ($1, $2, $3, $4)',
+          [parseInt(goalId), user_id, role, Number(amount)]
+        );
       }
 
-      // Check if goal is now completed
-      // Get the goal's target amount
-      const { data: goalData, error: goalError } = await supabase
-        .from('goal')
-        .select('amount, status')
-        .eq('goal_id', parseInt(goalId))
-        .single();
+      const { rows: gDataRows } = await pool.query(
+        'SELECT amount, status FROM goal WHERE goal_id = $1',
+        [parseInt(goalId)]
+      );
+      const goalData = gDataRows[0];
+      
+      if (!goalData) continue;
 
-      if (goalError) {
-        console.error(`Error fetching goal for completion check:`, goalError);
-        continue; // Don't fail the whole operation, just continue
-      }
+      const { rows: allParticipants } = await pool.query(
+        'SELECT allocated_amount FROM goal_participant WHERE goal_id = $1',
+        [parseInt(goalId)]
+      );
 
-      // Calculate total allocated amount for this goal
-      const { data: allParticipants, error: participantsError } = await supabase
-        .from('goal_participants')
-        .select('allocated_amount')
-        .eq('goal_id', parseInt(goalId));
+      const totalAllocated = allParticipants.reduce((sum, participant) => 
+        sum + Number(participant.allocated_amount || 0), 0) || 0;
 
-      if (participantsError) {
-        console.error(`Error fetching participants for completion check:`, participantsError);
-        continue; // Don't fail the whole operation, just continue
-      }
-
-      const totalAllocated = allParticipants?.reduce((sum, participant) => 
-        sum + (participant.allocated_amount || 0), 0) || 0;
-
-      // console.log(`\n=== GOAL COMPLETION CHECK ===`);
-      // console.log(`Goal ${goalId}:`);
-      // console.log(`  - Target amount: ${goalData.amount}`);
-      // console.log(`  - Total allocated: ${totalAllocated}`);
-      // console.log(`  - Current status: ${goalData.status}`);
-      // console.log(`  - All participants:`, allParticipants);
-
-      // If goal is completed and status isn't already 'completed'
       if (totalAllocated >= goalData.amount && goalData.status !== 'completed') {
-        const { error: updateStatusError } = await supabase
-          .from('goal')
-          .update({ 
-            status: 'completed'
-          })
-          .eq('goal_id', parseInt(goalId));
-
-        if (updateStatusError) {
-          console.error(`Error updating goal status to completed:`, updateStatusError);
-        } else {
-          console.log(`Goal ${goalId} marked as completed!`);
-          completedGoals.push(parseInt(goalId));
-        }
+        await pool.query(
+          'UPDATE goal SET status = $1 WHERE goal_id = $2',
+          ['completed', parseInt(goalId)]
+        );
+        completedGoals.push(parseInt(goalId));
       } else if (goalData.status === 'pending' && totalAllocated > 0) {
-        // Update status from pending to in-progress when first allocation is made
-        const { error: updateStatusError } = await supabase
-          .from('goal')
-          .update({ 
-            status: 'in-progress'
-          })
-          .eq('goal_id', parseInt(goalId));
-
-        if (updateStatusError) {
-          console.error(`Error updating goal status to in-progress:`, updateStatusError);
-        } else {
-          console.log(`Goal ${goalId} marked as in-progress!`);
-        }
+        await pool.query(
+          'UPDATE goal SET status = $1 WHERE goal_id = $2',
+          ['in-progress', parseInt(goalId)]
+        );
       }
     }
 
-    console.log("All allocations processed successfully");
-    
-    // Return updated goal information for the allocated goals
     const updatedGoals = [];
-    console.log("Fetching updated goal data for allocated goals...");
     
     for (const goalId of Object.keys(allocations)) {
       try {
-        const { data: goalData, error: goalError } = await supabase
-          .from('goal')
-          .select('*')
-          .eq('goal_id', parseInt(goalId))
-          .single();
+        const { rows: gRows } = await pool.query(
+          'SELECT * FROM goal WHERE goal_id = $1',
+          [parseInt(goalId)]
+        );
+        const goalData = gRows[0];
 
-        if (!goalError && goalData) {
-          // Get total allocated amount for this goal
-          const { data: allParticipants, error: participantsError } = await supabase
-            .from('goal_participants')
-            .select('allocated_amount')
-            .eq('goal_id', parseInt(goalId));
+        if (goalData) {
+          const { rows: pRows } = await pool.query(
+            'SELECT allocated_amount FROM goal_participant WHERE goal_id = $1',
+            [parseInt(goalId)]
+          );
 
-          if (!participantsError) {
-            const totalAllocated = allParticipants?.reduce((sum, participant) => 
-              sum + (participant.allocated_amount || 0), 0) || 0;
+          const totalAllocated = pRows.reduce((sum, participant) => 
+            sum + Number(participant.allocated_amount || 0), 0) || 0;
             
-            console.log(`Goal ${goalId} updated: ${totalAllocated}/${goalData.amount}`);
-            
-            updatedGoals.push({
-              ...goalData,
-              current_amount: totalAllocated
-            });
-          }
+          updatedGoals.push({
+            ...goalData,
+            current_amount: totalAllocated
+          });
         }
       } catch (error) {
         console.error(`Error fetching updated data for goal ${goalId}:`, error);
       }
     }
-
-    console.log("Final allocation result:", {
-      allocations,
-      completedGoals,
-      updatedGoalsCount: updatedGoals.length
-    });
 
     res.status(200).json({ 
       message: "Allocations processed successfully",
@@ -676,191 +436,138 @@ export const allocateToGoals = async (req: Request, res: Response) => {
       completedGoals: completedGoals,
       updatedGoals: updatedGoals
     });
+    return;
 
   } catch (error) {
     console.error("Error processing allocations:", error);
     res.status(500).json({ error: "Failed to process allocations" });
+    return;
   }
 };
 
-// Get pending invitations for the current user
 export const getPendingInvitations = async (req: Request, res: Response) => {
-  const user_id = (req.user as jwt.JwtPayload).sub;
+  const user_id = (req.user as jwt.JwtPayload).sub as string;
 
   try {
-    const { data, error } = await supabase
-      .from('goal_participants')
-      .select(`
-        goal_id,
-        role,
-        allocated_amount,
-        goal:goal_id (
-          goal_id,
-          title,
-          category,
-          description,
-          status,
-          amount,
-          target_date,
-          user_id,
-          user:user_id (
-            name
-          )
-        )
-      `)
-      .eq('user_id', user_id)
-      .eq('role', 'pending')
-      .order('goal(target_date)', { ascending: true });
+    const { rows: rawData } = await pool.query(`
+      SELECT gp.goal_id, gp.user_id, gp.role, gp.allocated_amount, 
+             g.title as g_title, g.category as g_category, g.description as g_description,
+             g.status as g_status, g.amount as g_amount, g.target_date as g_target_date, g.user_id as g_user_id,
+             u.name as u_name
+      FROM goal_participant gp
+      JOIN goal g ON gp.goal_id = g.goal_id
+      JOIN "user" u ON g.user_id = u.user_id
+      WHERE gp.user_id = $1 AND gp.role = 'pending'
+      ORDER BY g.target_date ASC
+    `, [user_id]);
 
-    if (error) {
-      console.error("Error fetching pending invitations:", error);
-      throw error;
-    }
+    const data = rawData.map(row => ({
+      goal_id: row.goal_id,
+      user_id: row.user_id,
+      role: row.role,
+      allocated_amount: row.allocated_amount,
+      goal: {
+        goal_id: row.goal_id,
+        title: row.g_title,
+        category: row.g_category,
+        description: row.g_description,
+        status: row.g_status,
+        amount: row.g_amount,
+        target_date: row.g_target_date,
+        user_id: row.g_user_id,
+        user: { name: row.u_name }
+      }
+    }));
 
     res.status(200).json(data || []);
+    return;
   } catch (error) {
     console.error("Error fetching pending invitations:", error);
     res.status(500).json({ error: "Failed to fetch pending invitations" });
+    return;
   }
 };
 
-// Accept a goal invitation
 export const acceptInvitation = async (req: Request, res: Response) => {
-  const user_id = (req.user as jwt.JwtPayload).sub;
+  const user_id = (req.user as jwt.JwtPayload).sub as string;
   const { goalId } = req.params;
 
-  // console.log("=== ACCEPT INVITATION DEBUG ===");
-  // console.log("User ID:", user_id);
-  // console.log("Goal ID (raw):", goalId);
-  // console.log("Goal ID (parsed):", parseInt(goalId));
-
   try {
-    // Update the participant role from 'pending' to 'collaborator' - convert goalId to number
-    const { data, error } = await supabase
-      .from('goal_participants')
-      .update({ role: 'collaborator' })
-      .eq('goal_id', parseInt(goalId))
-      .eq('user_id', user_id)
-      .eq('role', 'pending')
-      .select();
+    const { rowCount } = await pool.query(
+      'UPDATE goal_participant SET role = $1 WHERE goal_id = $2 AND user_id = $3 AND role = $4',
+      ['collaborator', parseInt(goalId), user_id, 'pending']
+    );
 
-    // console.log("Update query result:");
-    // console.log("- Data:", data);
-    // console.log("- Error:", error);
-
-    if (error) {
-      console.error("Error accepting invitation:", error);
-      throw error;
-    }
-
-    if (!data || data.length === 0) {
-      console.log("No invitation found to accept");
+    if (rowCount === 0) {
       res.status(404).json({ error: "Invitation not found or already processed" });
       return;
     }
 
-    // console.log("Invitation accepted successfully:", data);
-    res.status(200).json({ message: "Invitation accepted successfully", data: data[0] });
+    const { rows: updatedParticipants } = await pool.query(
+      'SELECT * FROM goal_participant WHERE goal_id = $1 AND user_id = $2',
+      [parseInt(goalId), user_id]
+    );
+
+    res.status(200).json({ message: "Invitation accepted successfully", data: updatedParticipants[0] });
+    return;
   } catch (error) {
     console.error("Error accepting invitation:", error);
     res.status(500).json({ error: "Failed to accept invitation" });
+    return;
   }
 };
 
-// Reject a goal invitation
 export const rejectInvitation = async (req: Request, res: Response) => {
-  const user_id = (req.user as jwt.JwtPayload).sub;
+  const user_id = (req.user as jwt.JwtPayload).sub as string;
   const { goalId } = req.params;
 
-  // console.log("=== REJECT INVITATION DEBUG ===");
-  // console.log("User ID:", user_id);
-  // console.log("Goal ID (raw):", goalId);
-  // console.log("Goal ID (parsed):", parseInt(goalId));
-
   try {
-    // Only delete the current user's participation record
-    const { data: deletedParticipant, error: deleteParticipantError } = await supabase
-      .from('goal_participants')
-      .delete()
-      .eq('goal_id', parseInt(goalId))
-      .eq('user_id', user_id)
-      .eq('role', 'pending')
-      .select();
+    const { rowCount } = await pool.query(
+      'DELETE FROM goal_participant WHERE goal_id = $1 AND user_id = $2 AND role = $3',
+      [parseInt(goalId), user_id, 'pending']
+    );
 
-    // console.log("Participant deletion result:");
-    // console.log("- Data:", deletedParticipant);
-    // console.log("- Error:", deleteParticipantError);
-
-    if (deleteParticipantError) {
-      console.error("Error deleting goal participant:", deleteParticipantError);
-      throw deleteParticipantError;
-    }
-
-    if (!deletedParticipant || deletedParticipant.length === 0) {
-      console.log("No pending invitation found to reject");
+    if (rowCount === 0) {
       res.status(404).json({ error: "Invitation not found or already processed" });
       return;
     }
 
-    // Check if there are any remaining participants after rejection
-    const { data: remainingParticipants, error: remainingError } = await supabase
-      .from('goal_participants')
-      .select('user_id, role')
-      .eq('goal_id', parseInt(goalId));
+    const { rows: remainingParticipants } = await pool.query(
+      'SELECT user_id, role FROM goal_participant WHERE goal_id = $1',
+      [parseInt(goalId)]
+    );
 
-    if (remainingError) {
-      console.error("Error checking remaining participants:", remainingError);
-      throw remainingError;
-    }
+    const participantCount = remainingParticipants.length;
 
-    // console.log("Remaining participants:", remainingParticipants);
-
-    // If no participants remain, the goal automatically becomes a personal goal
-    // (participantCount will be 1 when only the owner remains)
-    const participantCount = remainingParticipants?.length || 0;
-    // console.log("Participant count after rejection:", participantCount);
-
-    // console.log("Invitation rejected successfully");
     res.status(200).json({ 
       message: "Goal invitation rejected successfully", 
-      deletedParticipant: deletedParticipant[0],
+      deletedParticipant: { count: rowCount },
       remainingParticipants: participantCount
     });
+    return;
   } catch (error) {
     console.error("Error rejecting invitation:", error);
     res.status(500).json({ error: "Failed to reject invitation" });
+    return;
   }
 };
 
-// Debug endpoint to check database state
 export const debugDatabase = async (req: Request, res: Response) => {
-  const user_id = (req.user as jwt.JwtPayload).sub;
+  const user_id = (req.user as jwt.JwtPayload).sub as string;
 
   try {
-    console.log("=== DATABASE DEBUG FOR USER:", user_id, "===");
+    const { rows: goals } = await pool.query('SELECT * FROM goal WHERE user_id = $1', [user_id]);
+    const { rows: participants } = await pool.query('SELECT * FROM goal_participant WHERE user_id = $1', [user_id]);
 
-    // Get all goals for this user
-    const { data: goals, error: goalsError } = await supabase
-      .from('goal')
-      .select('*')
-      .eq('user_id', user_id);
-
-    // Get all goal participants for this user
-    const { data: participants, error: participantsError } = await supabase
-      .from('goal_participants')
-      .select('*')
-      .eq('user_id', user_id);
-
-    // Get all goal participants for all goals this user owns
-    const goalIds = goals?.map(g => g.goal_id) || [];
-    const { data: allParticipants, error: allParticipantsError } = await supabase
-      .from('goal_participants')
-      .select('*')
-      .in('goal_id', goalIds);
-
-    // console.log("User's goals:", goals);
-    // console.log("User's participations:", participants);
-    // console.log("All participants in user's goals:", allParticipants);
+    const goalIds = goals.map(g => g.goal_id);
+    let allParticipants: any[] = [];
+    if (goalIds.length > 0) {
+      const { rows } = await pool.query(
+        'SELECT * FROM goal_participant WHERE goal_id = ANY($1::int[])',
+        [goalIds]
+      );
+      allParticipants = rows;
+    }
 
     res.status(200).json({
       user_id,
@@ -868,9 +575,10 @@ export const debugDatabase = async (req: Request, res: Response) => {
       userParticipations: participants || [],
       allParticipants: allParticipants || []
     });
+    return;
   } catch (error) {
     console.error("Debug error:", error);
     res.status(500).json({ error: "Debug failed" });
+    return;
   }
 };
-

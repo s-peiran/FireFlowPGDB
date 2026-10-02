@@ -1,0 +1,25 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: fireflow-db
+  namespace: fireflow
+spec:
+  instances: 3
+  # Air-gapped compatible image (adjust registry if needed)
+  imageName: cloudnative-pg/postgresql:17.10
+  
+  # Storage configuration
+  storage:
+    size: 10Gi
+  
+  # Database creation
+  bootstrap:
+    initdb:
+      database: fireflow
+      owner: fireflow
+      
+  # High Availability and self-healing
+  postgresql:
+    parameters:
+      max_connections: "100"
+      shared_buffers: "256MB"

@@ -23,7 +23,9 @@ export async function middleware(request: NextRequest) {
       return NextResponse.redirect(new URL("/login", request.url));
     }
 
-    const res = await fetch("https://fireflow-m0z1.onrender.com/api", {
+    const apiUrl = process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100";
+    console.log("Middleware trying to fetch from:", apiUrl);
+    const res = await fetch(`${apiUrl}/api`, {
       headers: {
         Authorization: `Bearer ${token}`,
       },

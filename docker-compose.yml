@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:17
+    container_name: fireflow-db
+    environment:
+      POSTGRES_USER: fireflow
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: fireflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fireflow-backend
+    ports:
+      - "5100:5100"
+    environment:
+      DATABASE_URL: "postgresql://fireflow:password@db:5432/fireflow?schema=public"
+      JWT_SECRET: "your_local_development_secret"
+      PORT: "5100"
+    depends_on:
+      - db
+
+  frontend:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: fireflow-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      # We use localhost here because the user's browser accesses the backend via their own machine
+      NEXT_PUBLIC_API_URL: "http://localhost:5100"
+      # We use backend here because the Next.js server accesses the backend via Docker's internal network
+      INTERNAL_API_URL: "http://backend:5100"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:

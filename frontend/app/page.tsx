@@ -22,7 +22,7 @@ export default function HomePage() {
     const token = localStorage.getItem("authToken");
     const fetchTodaysExpenses = async () => {
       try {
-        const res = await fetch("https://fireflow-m0z1.onrender.com/api/transactions/todays-expenses", {
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/transactions/todays-expenses`, {
           credentials: "include",
           headers: {
             Authorization: `Bearer ${token}`,
@@ -30,7 +30,7 @@ export default function HomePage() {
         })
         const data = await res.json()
         setTodaysExpenses(data.total)
-        const expense = await fetch("https://fireflow-m0z1.onrender.com/api/dashboard/month-expense", {
+        const expense = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/dashboard/month-expense`, {
               credentials: "include",
               headers: {
                 Authorization: `Bearer ${token}`,
@@ -38,7 +38,7 @@ export default function HomePage() {
             })
         const expenseData = await expense.json()
         setTotalExpenses(expenseData)
-        const income = await fetch("https://fireflow-m0z1.onrender.com/api/dashboard/month-income", {
+        const income = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/dashboard/month-income`, {
               credentials: "include",
               headers: {
                 Authorization: `Bearer ${token}`,
@@ -50,7 +50,7 @@ export default function HomePage() {
         const totalDaysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate()
         const daysLeft = totalDaysInMonth - today.getDate() + 1 // include today
         setRemainingDays(daysLeft);
-        const user = await fetch("https://fireflow-m0z1.onrender.com/api/users", {
+        const user = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/users`, {
           credentials: "include", 
           headers: {
             Authorization: `Bearer ${token}`,

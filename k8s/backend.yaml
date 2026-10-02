@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fireflow-backend
+  namespace: fireflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fireflow-backend
+  template:
+    metadata:
+      labels:
+        app: fireflow-backend
+    spec:
+      containers:
+      - name: backend
+        image: fireflow-backend:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5100
+        env:
+        - name: PORT
+          value: "5100"
+        - name: JWT_SECRET
+          value: "your_super_secret_jwt_key_here" # In production, use k8s secrets
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: fireflow-db-app
+              key: uri
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fireflow-backend
+  namespace: fireflow
+spec:
+  selector:
+    app: fireflow-backend
+  ports:
+  - port: 5100
+    targetPort: 5100

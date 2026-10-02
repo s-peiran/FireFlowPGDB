@@ -72,7 +72,7 @@ export default function RecurringPage() {
       setError(null);
 
       const response = await fetch(
-        "https://fireflow-m0z1.onrender.com/api/recurring-transactions",
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/recurring-transactions`,
         {
           method: "GET",
           credentials: "include", // Include cookies for authentication
@@ -225,7 +225,7 @@ export default function RecurringPage() {
     try {
       const token = localStorage.getItem("authToken");
       const response = await fetch(
-        `https://fireflow-m0z1.onrender.com/api/recurring-transactions/delete`,
+        `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/recurring-transactions/delete`,
         {
           method: "POST",
           credentials: "include",

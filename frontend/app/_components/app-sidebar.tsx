@@ -66,7 +66,7 @@ export function AppSidebar() {
     const token = localStorage.getItem("authToken");
     async function fetchProfile() {
       try {
-        const response = await fetch("https://fireflow-m0z1.onrender.com/api/users", {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/users`, {
           method: "GET",
           credentials: "include",
           headers: {
@@ -93,7 +93,7 @@ export function AppSidebar() {
 
   async function handleLogout() {
     try {
-      await fetch("https://fireflow-m0z1.onrender.com/login/logout", {
+      await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/login/logout`, {
         credentials: "include",
       });
       localStorage.removeItem("authToken");

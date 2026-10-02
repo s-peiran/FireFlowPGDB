@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
-import { supabase } from "../db/supabaseClient";
+import pool from '../db/pool';
 import jwt from 'jsonwebtoken';
-import { Friend } from '../models/friend';
 
 /**
  * 
@@ -10,54 +9,36 @@ import { Friend } from '../models/friend';
  * @returns username + name of all friends
  */
 export const getAllFriends = async (req: Request, res: Response) => {
-  const userId = (req.user as jwt.JwtPayload).sub;
+  const userId = (req.user as jwt.JwtPayload).sub as string;
   
   try {
-    const {data: friend1, error: friend1Error}= await supabase
-      .from('friend')
-      .select('friend_id, relationship')
-      .eq('status', 'accepted')
-      .eq('user_id', userId);
+    const { rows: friend1 } = await pool.query(
+      'SELECT "friendId", relationship FROM friend WHERE status = $1 AND "userId" = $2',
+      ['accepted', userId]
+    );
     
-    const {data: friend2, error: friend2Error} = await supabase
-      .from('friend')
-      .select('user_id, relationship')
-      .eq('status', 'accepted')
-      .eq('friend_id', userId);
+    const { rows: friend2 } = await pool.query(
+      'SELECT "userId", relationship FROM friend WHERE status = $1 AND "friendId" = $2',
+      ['accepted', userId]
+    );
 
-    if (friend1Error || friend2Error) {
-      console.error("Supabase error:", friend1Error || friend2Error);
-      res.status(500).json({ error: 'Failed to fetch friends' });
-      return;
-    }
-    
-    // Extract friend_ids from friend1
-    const friend1Ids = friend1 ? friend1.map(row => row.friend_id) : [];
-    // Extract user_ids from friend2
-    const friend2Ids = friend2 ? friend2.map(row => row.user_id) : [];
-    // Combine them
+    const friend1Ids = friend1.map(row => row.friendId);
+    const friend2Ids = friend2.map(row => row.userId);
     const allFriendIds = [...friend1Ids, ...friend2Ids];
 
     if (allFriendIds.length === 0) {
-      res.status(200).json([]); // No friends found
+      res.status(200).json([]);
       return;
     }
 
-    // Get user details for all friends
-    const { data: users, error: usersError } = await supabase
-      .from('user')
-      .select('user_id, username, name')
-      .in('user_id', allFriendIds);
+    const { rows: users } = await pool.query(
+      'SELECT user_id, username, name FROM "user" WHERE user_id = ANY($1::text[])',
+      [allFriendIds]
+    );
 
-    if (usersError) {
-      throw usersError;
-    }
-
-    // Combine friend data with user details
     const result = users.map(user => {
-      // Find the relationship from either friend1 or friend2
-      const friend1Data = friend1?.find(f => f.friend_id === user.user_id);
-      const friend2Data = friend2?.find(f => f.user_id === user.user_id);
+      const friend1Data = friend1.find(f => f.friendId === user.user_id);
+      const friend2Data = friend2.find(f => f.userId === user.user_id);
       const relationship = friend1Data?.relationship || friend2Data?.relationship || 'friend';
       
       return {
@@ -71,51 +52,38 @@ export const getAllFriends = async (req: Request, res: Response) => {
     });
 
     res.status(200).json(result);
-
+    return;
   } catch (error) {
-    console.error("Supabase error:", error);
+    console.error("PG error:", error);
     res.status(500).json({ error: 'Failed to fetch friends' });
+    return;
   }
 };
 
 export const getAllFriendsRequests = async (req: Request, res: Response) => {
-  const userId = (req.user as jwt.JwtPayload).sub;
+  const userId = (req.user as jwt.JwtPayload).sub as string;
   const toAccept = req.query.toAccept === 'true';
   
   try {
     if (toAccept) {
-      // Fetch all friend requests sent to the user (current user is the receiver)
-      const { data: friendRequests, error } = await supabase
-        .from('friend')
-        .select('relationship, user_id')
-        .eq('friend_id', userId)
-        .eq('status', 'pending');
+      const { rows: friendRequests } = await pool.query(
+        'SELECT relationship, "userId" FROM friend WHERE "friendId" = $1 AND status = $2',
+        [userId, 'pending']
+      );
 
-      if (error) {
-        console.error("Error fetching received requests:", error);
-        throw error;
-      }
-
-      if (!friendRequests || friendRequests.length === 0) {
+      if (friendRequests.length === 0) {
         res.status(200).json([]);
         return;
       }
 
-      // Get user details for the senders
-      const senderIds = friendRequests.map(req => req.user_id);
-      const { data: senders, error: senderError } = await supabase
-        .from('user')
-        .select('user_id, username, name')
-        .in('user_id', senderIds);
+      const senderIds = friendRequests.map(req => req.userId);
+      const { rows: senders } = await pool.query(
+        'SELECT user_id, username, name FROM "user" WHERE user_id = ANY($1::text[])',
+        [senderIds]
+      );
 
-      if (senderError) {
-        console.error("Error fetching sender details:", senderError);
-        throw senderError;
-      }
-
-      // Combine the data
       const result = friendRequests.map(friendReq => {
-        const sender = senders?.find(sender => sender.user_id === friendReq.user_id);
+        const sender = senders.find(sender => sender.user_id === friendReq.userId);
         return {
           relationship: friendReq.relationship,
           user: sender || null
@@ -123,40 +91,26 @@ export const getAllFriendsRequests = async (req: Request, res: Response) => {
       }).filter(item => item.user !== null);
 
       res.status(200).json(result);
-
+      return;
     } else {
-      // Fetch all friend requests sent by the user (current user is the sender)
-      const { data: friendRequests, error } = await supabase
-        .from('friend')
-        .select('relationship, friend_id')
-        .eq('user_id', userId)
-        .eq('status', 'pending');
+      const { rows: friendRequests } = await pool.query(
+        'SELECT relationship, "friendId" FROM friend WHERE "userId" = $1 AND status = $2',
+        [userId, 'pending']
+      );
 
-      if (error) {
-        console.error("Error fetching sent requests:", error);
-        throw error;
-      }
-
-      if (!friendRequests || friendRequests.length === 0) {
+      if (friendRequests.length === 0) {
         res.status(200).json([]);
         return;
       }
 
-      // Get user details for the receivers
-      const receiverIds = friendRequests.map(req => req.friend_id);
-      const { data: receivers, error: receiverError } = await supabase
-        .from('user')
-        .select('user_id, username, name')
-        .in('user_id', receiverIds);
+      const receiverIds = friendRequests.map(req => req.friendId);
+      const { rows: receivers } = await pool.query(
+        'SELECT user_id, username, name FROM "user" WHERE user_id = ANY($1::text[])',
+        [receiverIds]
+      );
 
-      if (receiverError) {
-        console.error("Error fetching receiver details:", receiverError);
-        throw receiverError;
-      }
-
-      // Combine the data
       const result = friendRequests.map(friendReq => {
-        const receiver = receivers?.find(receiver => receiver.user_id === friendReq.friend_id);
+        const receiver = receivers.find(receiver => receiver.user_id === friendReq.friendId);
         return {
           relationship: friendReq.relationship,
           user: receiver || null
@@ -164,218 +118,179 @@ export const getAllFriendsRequests = async (req: Request, res: Response) => {
       }).filter(item => item.user !== null);
 
       res.status(200).json(result);
+      return;
     }
 
   } catch (error) {
-    console.error("Supabase error in getAllFriendsRequests:", error);
+    console.error("PG error in getAllFriendsRequests:", error);
     res.status(500).json({ error: 'Failed to fetch friend requests' });
+    return;
   }
 }
 
 export const sendFriendRequest = async (req: Request, res: Response) => {
   const username = req.body.username;
-  const currentUserId = (req.user as jwt.JwtPayload).sub;
+  const currentUserId = (req.user as jwt.JwtPayload).sub as string;
 
   try {
-    // Get the friend's user ID
-    const { data: user, error: userError } = await supabase
-      .from('user')
-      .select('user_id')
-      .eq('username', username)
-      .single();
+    const { rows: users } = await pool.query(
+      'SELECT user_id FROM "user" WHERE username = $1',
+      [username]
+    );
+    const user = users[0];
 
-    if (userError) {
-        res.status(404).json({ error: 'User not found' });
-        return;
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
     }
 
-    // Insert the friend relationship
-    const { data: insertedData, error: insertError } = await supabase
-      .from('friend')
-      .insert({
-        user_id: currentUserId,
-        friend_id: user?.user_id,
-        relationship: req.body.relationship || 'friend',
-        status: 'pending'
-      })
-      .select('*');
-
-    if (insertError) {
-      console.error("Error inserting friend request:", insertError);
-      throw insertError;
-    }
+    const { rows: insertedData } = await pool.query(
+      'INSERT INTO friend ("userId", "friendId", relationship, status) VALUES ($1, $2, $3, $4) RETURNING *',
+      [currentUserId, user.user_id, req.body.relationship || 'friend', 'pending']
+    );
 
     res.status(201).json({ message: "Friend Request Sent", data: insertedData });
+    return;
   } catch (error) {
-    console.error("Supabase error in sendFriendRequest:", error);
+    console.error("PG error in sendFriendRequest:", error);
     res.status(500).json({ error: 'Failed to send friend request' });
+    return;
   }
 };
 
 export const acceptFriendRequest = async (req: Request, res: Response) => {
     const { username } = req.body;
-    const userId = (req.user as jwt.JwtPayload).sub;
+    const userId = (req.user as jwt.JwtPayload).sub as string;
 
     try {
-      // Get the sender's user ID from username
-      const { data: sender, error: senderError } = await supabase
-      .from('user')
-      .select('user_id')
-      .eq('username', username)
-      .single();
+      const { rows: users } = await pool.query(
+        'SELECT user_id FROM "user" WHERE username = $1',
+        [username]
+      );
+      const sender = users[0];
 
-      if (senderError) {
-          res.status(404).json({ error: 'User not found' });
-          return;
+      if (!sender) {
+        res.status(404).json({ error: 'User not found' });
+        return;
       }
-      const senderId = sender?.user_id;
+      const senderId = sender.user_id;
 
-      // Find and update the friend request where sender sent to current user
-      const { data, error } = await supabase
-        .from('friend')
-        .update({ status: 'accepted' })
-        .eq('user_id', senderId)
-        .eq('friend_id', userId)
-        .eq('status', 'pending')
-        .select('*');
-        
-      if (error) {
-          throw error;
-      } else if (data.length === 0) {
-          res.status(404).json({ error: 'Friend request not found' });
-          return;
+      const { rowCount } = await pool.query(
+        'UPDATE friend SET status = $1 WHERE "userId" = $2 AND "friendId" = $3 AND status = $4',
+        ['accepted', senderId, userId, 'pending']
+      );
+
+      if (rowCount === 0) {
+        res.status(404).json({ error: 'Friend request not found' });
+        return;
       }
 
-      res.status(200).json({ message: "Friend request accepted", data });
+      res.status(200).json({ message: "Friend request accepted", data: [{ status: 'accepted' }] });
+      return;
     } catch (error) {
-        console.error("Supabase update error:", error);
-        res.status(500).json({ error: 'Failed to accept friend request' });
+      console.error("PG update error:", error);
+      res.status(500).json({ error: 'Failed to accept friend request' });
+      return;
     }
 }
 
 export const rejectFriendRequest = async (req: Request, res: Response) => {
-    deleteFriend(req, res); // Reuse delete function to reject friend request
+    deleteFriend(req, res);
 }
 
 export const cancelFriendRequest = async (req: Request, res: Response) => {
-    const userId = (req.user as jwt.JwtPayload).sub;
+    const userId = (req.user as jwt.JwtPayload).sub as string;
     const { username } = req.body;
 
     try {
-      const { data: friend, error: friendError } = await supabase
-      .from('user')
-      .select('user_id')
-      .eq('username', username)
-      .single();
+      const { rows: users } = await pool.query(
+        'SELECT user_id FROM "user" WHERE username = $1',
+        [username]
+      );
+      const friend = users[0];
 
-      if (friendError) {
-          res.status(404).json({ error: 'User not found' });
-          return;
+      if (!friend) {
+        res.status(404).json({ error: 'User not found' });
+        return;
       }
-      const friendId = friend?.user_id;
+      const friendId = friend.user_id;
 
-      // Delete the friend request sent by current user
-      const { data, error } = await supabase
-        .from('friend')
-        .delete()
-        .eq('user_id', userId)
-        .eq('friend_id', friendId)
-        .eq('status', 'pending')
-        .select('*');
-        
-      if (error) {
-          throw error;
-      } else if (data.length === 0) {
-          res.status(404).json({ error: 'Friend request not found' });
-          return;
+      const { rowCount } = await pool.query(
+        'DELETE FROM friend WHERE "userId" = $1 AND "friendId" = $2 AND status = $3',
+        [userId, friendId, 'pending']
+      );
+
+      if (rowCount === 0) {
+        res.status(404).json({ error: 'Friend request not found' });
+        return;
       }
 
       res.status(200).json({ message: "Friend request cancelled successfully" });
+      return;
     } catch (error) {
-        console.error("Supabase delete error:", error);
-        res.status(500).json({ error: 'Failed to cancel friend request' });
+      console.error("PG delete error:", error);
+      res.status(500).json({ error: 'Failed to cancel friend request' });
+      return;
     }
 }
 
 export const deleteFriend = async (req: Request, res: Response) => {
-    const userId = (req.user as jwt.JwtPayload).sub;
+    const userId = (req.user as jwt.JwtPayload).sub as string;
     const { username } = req.body;
 
     try {
-      const { data: friend, error: friendError } = await supabase
-      .from('user')
-      .select('user_id')
-      .eq('username', username)
-      .single();
+      const { rows: users } = await pool.query(
+        'SELECT user_id FROM "user" WHERE username = $1',
+        [username]
+      );
+      const friend = users[0];
 
-      if (friendError) {
-          res.status(404).json({ error: 'Friend not found' });
-          return;
+      if (!friend) {
+        res.status(404).json({ error: 'Friend not found' });
+        return;
       }
-      const friendId = friend?.user_id;
+      const friendId = friend.user_id;
 
-      // Delete both directions of the friendship/request
-      const { data: data1, error: error1 } = await supabase
-        .from('friend')
-        .delete()
-        .eq('user_id', userId)
-        .eq('friend_id', friendId)
-        .select('*');
+      const { rowCount: count1 } = await pool.query(
+        'DELETE FROM friend WHERE "userId" = $1 AND "friendId" = $2',
+        [userId, friendId]
+      );
         
-      const { data: data2, error: error2 } = await supabase
-        .from('friend')
-        .delete()
-        .eq('user_id', friendId)
-        .eq('friend_id', userId)
-        .select('*');
+      const { rowCount: count2 } = await pool.query(
+        'DELETE FROM friend WHERE "userId" = $1 AND "friendId" = $2',
+        [friendId, userId]
+      );
 
-      if (error1 && error2) {
-          throw error1 || error2;
-      }
-      
-      if ((data1?.length || 0) === 0 && (data2?.length || 0) === 0) {
-          res.status(404).json({ error: 'Friend relationship not found' });
-          return;
+      if (count1 === 0 && count2 === 0) {
+        res.status(404).json({ error: 'Friend relationship not found' });
+        return;
       }
 
       res.status(200).json({ message: "Friend deleted successfully" });
+      return;
     } catch (error) {
-        console.error("Supabase delete error:", error);
-        res.status(500).json({ error: 'Failed to delete friend' });
+      console.error("PG delete error:", error);
+      res.status(500).json({ error: 'Failed to delete friend' });
+      return;
     }
 }
 
-/**
- * Get simplified friends list for goal collaboration
- * @param req 
- * @param res 
- * @returns Simple list of friends with user_id, username, name
- */
 export const getFriendsForGoals = async (req: Request, res: Response) => {
-  const userId = (req.user as jwt.JwtPayload).sub;
+  const userId = (req.user as jwt.JwtPayload).sub as string;
   
   try {
-    const {data: friend1, error: friend1Error} = await supabase
-      .from('friend')
-      .select('friend_id')
-      .eq('status', 'accepted')
-      .eq('user_id', userId);
+    const { rows: friend1 } = await pool.query(
+      'SELECT "friendId" FROM friend WHERE status = $1 AND "userId" = $2',
+      ['accepted', userId]
+    );
     
-    const {data: friend2, error: friend2Error} = await supabase
-      .from('friend')
-      .select('user_id')
-      .eq('status', 'accepted')
-      .eq('friend_id', userId);
+    const { rows: friend2 } = await pool.query(
+      'SELECT "userId" FROM friend WHERE status = $1 AND "friendId" = $2',
+      ['accepted', userId]
+    );
 
-    if (friend1Error || friend2Error) {
-      console.error("Supabase error:", friend1Error || friend2Error);
-      res.status(500).json({ error: 'Failed to fetch friends' });
-      return;
-    }
-    
-    // Extract friend_ids from both directions
-    const friend1Ids = friend1 ? friend1.map(row => row.friend_id) : [];
-    const friend2Ids = friend2 ? friend2.map(row => row.user_id) : [];
+    const friend1Ids = friend1.map(row => row.friendId);
+    const friend2Ids = friend2.map(row => row.userId);
     const allFriendIds = [...friend1Ids, ...friend2Ids];
 
     if (allFriendIds.length === 0) {
@@ -383,21 +298,16 @@ export const getFriendsForGoals = async (req: Request, res: Response) => {
       return;
     }
 
-    // Get user details for all friends
-    const { data: users, error: usersError } = await supabase
-      .from('user')
-      .select('user_id, username, name')
-      .in('user_id', allFriendIds);
+    const { rows: users } = await pool.query(
+      'SELECT user_id, username, name FROM "user" WHERE user_id = ANY($1::text[])',
+      [allFriendIds]
+    );
 
-    if (usersError) {
-      console.error("Supabase users error:", usersError);
-      res.status(500).json({ error: 'Failed to fetch friend details' });
-      return;
-    }
-
-    res.status(200).json(users || []);
+    res.status(200).json(users);
+    return;
   } catch (error: any) {
     console.error("Error in getFriendsForGoals:", error);
     res.status(500).json({ error: 'Failed to fetch friends' });
+    return;
   }
 };

@@ -114,7 +114,7 @@ export function AddExpenseForm({
       }
 
       // Send POST request to backend
-      const response = await fetch("https://fireflow-m0z1.onrender.com/api/transactions/create", {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:5100"}/api/transactions/create`, {
         method: "POST",
         credentials: "include",
         headers: {

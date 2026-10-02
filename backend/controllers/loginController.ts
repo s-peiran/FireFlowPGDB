@@ -1,79 +1,82 @@
 import { Request, Response } from 'express';
-import { supabase } from "../db/supabaseClient";
+import pool from '../db/pool';
+import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 
-// once the user is registered, we will create a session for them
-// and set a JWT in an HTTP-only cookie. 
-// After which, the user will then login and then create their own user profile (eg. name, monthly saving)
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_key';
+
 export const registerUser = async (req: Request, res: Response) => {
   const { email, password, username } = req.body;
 
   try {
-    // 1. Create Supabase Auth user
-    const { data, error } = await supabase.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true, // auto confirm email if needed
-    });
+    const { rows: existingUserRows } = await pool.query(
+      'SELECT * FROM "user" WHERE email = $1 OR username = $2 LIMIT 1',
+      [email, username]
+    );
 
-    if (error) throw error;
+    if (existingUserRows.length > 0) {
+      res.status(400).json({ error: 'Email or username already in use' });
+      return;
+    }
 
-    const authUserId = data.user?.id;
+    const password_hash = await bcrypt.hash(password, 10);
 
-    // 2. Create user in your own `user` table (linking auth UUID)
-    const { error: userError } = await supabase.from('user').insert([
-      {user_id: authUserId,
-      username: username
-      }
-    ]);
-
-    if (userError) throw userError;
+    await pool.query(
+      'INSERT INTO "user" (email, username, password_hash) VALUES ($1, $2, $3)',
+      [email, username, password_hash]
+    );
 
     res.status(201).json({ message: 'User registered successfully' });
-    } catch (error: any) {
-        console.error(error);
-        res.status(500).json({ error: error.message || 'Registration failed' });
-    }
+    return;
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).json({ error: error.message || 'Registration failed' });
+    return;
+  }
 }
 
 export const loginUser = async (req: Request, res: Response) => {
   const { email, password } = req.body;
   try {
-    const {data, error} = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const { rows } = await pool.query(
+      'SELECT * FROM "user" WHERE email = $1 LIMIT 1',
+      [email]
+    );
 
-    if (error) throw error;
+    if (rows.length === 0) {
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
+    }
+    const user = rows[0];
 
-    const { access_token } = data.session;
+    const isMatch = await bcrypt.compare(password, user.password_hash);
+    if (!isMatch) {
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
+    }
 
-    // Set JWT in HTTP-only cookie
-    // res.cookie('token', access_token, {
-    //   httpOnly: true,
-    //   secure: true, // set to true in production
-    //   sameSite: 'none',
-    //   maxAge: 1000 * 60 * 60, // 1 hour
-    // });
-    res.status(200).json({ message: 'Login successful', token: access_token  });
+    const access_token = jwt.sign(
+      { sub: user.user_id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '1h' }
+    );
 
+    res.status(200).json({ message: 'Login successful', token: access_token });
+    return;
   } catch (error: any) {
     console.error(error);
     res.status(500).json({ error: error.message || 'Login failed' });
+    return;
   }
 }
 
 export const logoutUser = async (req: Request, res: Response) => {
   try {
-    // Clear the cookie
-    // res.clearCookie('token', {
-    //   httpOnly: true,
-    //   secure: true, // set to true in production
-    //   sameSite: 'none',
-    // });
-
     res.status(200).json({ message: 'Logout successful' });
+    return;
   } catch (error: any) {
     console.error(error);
     res.status(500).json({ error: error.message || 'Logout failed' });
+    return;
   }
 }

@@ -1,15 +1,13 @@
 import { Request, Response } from 'express';
-import { supabase } from "../db/supabaseClient";
+import pool from '../db/pool';
 import jwt from 'jsonwebtoken';
 
 function getTodayDate() {
   const now = new Date(); // create a new Date object with the current date and time
   const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()); 
-  // create a new Date object of today's date but since no time is specified, it defaults to midnight (00:00:00)
 
-  // Format to 'YYYY-MM-DD HH:mm:ss'
   const yyyy = midnight.getFullYear();
-  const mm = String(midnight.getMonth() + 1).padStart(2, '0'); // add 1 to month since getMonth() is indexed from 0, padding to ensure two digits
+  const mm = String(midnight.getMonth() + 1).padStart(2, '0'); 
   const dd = String(midnight.getDate()).padStart(2, '0');
   const hh = '00';
   const min = '00';
@@ -66,22 +64,18 @@ export const getDayExpense = async (req: Request, res: Response) => {
   const userId = (req.user as jwt.JwtPayload).sub;
 
   try {
-    const { data, error } = await supabase
-      .from('transaction')
-      .select('amount.sum()')
-      .eq('user_id', userId)
-      .eq('type', 'expense')
-      .gte('dateTime', getTodayDate())
-      .lt('dateTime', getNextDate());
+    const { rows } = await pool.query(
+      `SELECT COALESCE(SUM(amount), 0) as total FROM "transaction" 
+       WHERE user_id = $1 AND type = 'expense' AND "dateTime" >= $2 AND "dateTime" < $3`,
+      [userId, new Date(getTodayDate()), new Date(getNextDate())]
+    );
 
-    if (error) {
-      throw error;
-    }
-
-    res.status(200).json(data[0].sum|| 0); // Return total expense or 0 if no data found
+    res.status(200).json(Number(rows[0].total) || 0);
+    return;
   } catch (error) {
     console.error('Error fetching daily expenses:', error);
     res.status(500).json({ error: 'Failed to fetch daily expenses' });
+    return;
   }
 }
 
@@ -89,22 +83,18 @@ export const getMonthExpense = async (req: Request, res: Response) => {
   const userId = (req.user as jwt.JwtPayload).sub;
 
   try {
-    const { data, error } = await supabase
-      .from('transaction')
-      .select('amount.sum()')
-      .eq('user_id', userId)
-      .eq('type', 'expense')
-      .gte('dateTime', getThisMonth())
-      .lt('dateTime', getNextMonth());
+    const { rows } = await pool.query(
+      `SELECT COALESCE(SUM(amount), 0) as total FROM "transaction" 
+       WHERE user_id = $1 AND type = 'expense' AND "dateTime" >= $2 AND "dateTime" < $3`,
+      [userId, new Date(getThisMonth()), new Date(getNextMonth())]
+    );
 
-    if (error) {
-      throw error;
-    }
-
-    res.status(200).json(data[0].sum || 0); // Return total expense or 0 if no data found
+    res.status(200).json(Number(rows[0].total) || 0);
+    return;
   } catch (error) {
     console.error('Error fetching monthly expenses:', error);
     res.status(500).json({ error: 'Failed to fetch monthly expenses' });
+    return;
   }
 }
 
@@ -112,22 +102,18 @@ export const getMonthIncome = async (req: Request, res: Response) => {
   const userId = (req.user as jwt.JwtPayload).sub;
 
   try {
-    const { data, error } = await supabase
-      .from('transaction')
-      .select('amount.sum()')
-      .eq('user_id', userId)
-      .eq('type', 'income')
-      .gte('dateTime', getThisMonth())
-      .lt('dateTime', getNextMonth());
+    const { rows } = await pool.query(
+      `SELECT COALESCE(SUM(amount), 0) as total FROM "transaction" 
+       WHERE user_id = $1 AND type = 'income' AND "dateTime" >= $2 AND "dateTime" < $3`,
+      [userId, new Date(getThisMonth()), new Date(getNextMonth())]
+    );
 
-    if (error) {
-      throw error;
-    }
-
-    res.status(200).json(data[0].sum || 0); // Return total expense or 0 if no data found
+    res.status(200).json(Number(rows[0].total) || 0);
+    return;
   } catch (error) {
-    console.error('Error fetching monthly expenses:', error);
-    res.status(500).json({ error: 'Failed to fetch monthly expenses' });
+    console.error('Error fetching monthly income:', error);
+    res.status(500).json({ error: 'Failed to fetch monthly income' });
+    return;
   }
 }
 
@@ -136,22 +122,17 @@ export const getFilteredMonthExpense = async (req: Request, res: Response) => {
   const { category } = req.body;
 
   try {
-    const { data, error } = await supabase
-      .from('transaction')
-      .select('amount.sum()')
-      .eq('user_id', userId)
-      .eq('type', 'expense')
-      .eq('category', category)
-      .gte('dateTime', getThisMonth())
-      .lt('dateTime', getNextMonth());
+    const { rows } = await pool.query(
+      `SELECT COALESCE(SUM(amount), 0) as total FROM "transaction" 
+       WHERE user_id = $1 AND type = 'expense' AND category = $2 AND "dateTime" >= $3 AND "dateTime" < $4`,
+      [userId, category, new Date(getThisMonth()), new Date(getNextMonth())]
+    );
 
-    if (error) {
-      throw error;
-    }
-
-    res.status(200).json(data[0].sum || 0); // Return total expense or 0 if no data found
+    res.status(200).json(Number(rows[0].total) || 0);
+    return;
   } catch (error) {
     console.error('Error fetching filtered monthly expenses:', error);
     res.status(500).json({ error: 'Failed to fetch filtered monthly expenses' });
+    return;
   }
 }
